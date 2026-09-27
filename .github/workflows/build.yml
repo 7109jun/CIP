@@ -1,10 +1,9 @@
 name: Build (Windows)
 
-# Compiles the CIP CLI (cip.exe) on Windows. Runs on every push/PR that
-# touches the Rust source, and can also be triggered manually.
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
@@ -13,9 +12,12 @@ on:
       - "cip-python/**"
       - "tests/**"
       - ".github/workflows/build.yml"
+
   pull_request:
-    branches: [main]
-  workflow_dispatch: {}
+    branches:
+      - main
+
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,44 +27,178 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify repository layout
+        shell: pwsh
+        run: |
+          Write-Host "=== GitHub Workspace ==="
+          Write-Host $env:GITHUB_WORKSPACE
+          Write-Host ""
+
+          Write-Host "=== Current Directory ==="
+          Get-Location
+          Write-Host ""
+
+          Write-Host "=== Repository Root ==="
+          Get-ChildItem -Force
+          Write-Host ""
+
+          $cargoToml = Join-Path $env:GITHUB_WORKSPACE "Cargo.toml"
+          $cargoLock = Join-Path $env:GITHUB_WORKSPACE "Cargo.lock"
+          $srcDir = Join-Path $env:GITHUB_WORKSPACE "src"
+
+          Write-Host "Cargo.toml: $cargoToml"
+          Write-Host "Cargo.lock: $cargoLock"
+          Write-Host "src:        $srcDir"
+          Write-Host ""
+
+          if (-not (Test-Path $cargoToml)) {
+            Write-Error "Cargo.toml was not found in the repository root."
+            exit 1
+          }
+
+          if (-not (Test-Path $cargoLock)) {
+            Write-Error "Cargo.lock was not found in the repository root."
+            exit 1
+          }
+
+          if (-not (Test-Path $srcDir)) {
+            Write-Error "src directory was not found in the repository root."
+            exit 1
+          }
+
+          Write-Host "Repository layout is valid."
+          Write-Host ""
+
+          Write-Host "=== Cargo.toml ==="
+          Get-Content $cargoToml
 
       - name: Install Rust (stable)
+        shell: pwsh
         run: |
           rustup default stable
           rustup update stable
+
+          Write-Host "=== Rust ==="
           rustc -Vv
+
+          Write-Host ""
+          Write-Host "=== Cargo ==="
           cargo --version
 
-      - name: Cache cargo registry & build artifacts
+      - name: Cache Cargo registry and build artifacts
         uses: actions/cache@v4
         with:
           path: |
             ~\.cargo\registry
             ~\.cargo\git
             target
-          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
+          key: windows-cargo-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
+            windows-cargo-${{ runner.arch }}-
             windows-cargo-
 
+      - name: Check Cargo manifest
+        shell: pwsh
+        run: |
+          cargo metadata `
+            --manifest-path "$env:GITHUB_WORKSPACE\Cargo.toml" `
+            --locked `
+            --no-deps `
+            --format-version 1
+
       - name: Run tests
-        run: cargo test --locked --verbose
+        shell: pwsh
+        run: |
+          cargo test `
+            --manifest-path "$env:GITHUB_WORKSPACE\Cargo.toml" `
+            --locked `
+            --verbose
 
       - name: Build release binary
-        run: cargo build --release --locked --verbose
+        shell: pwsh
+        run: |
+          cargo build `
+            --manifest-path "$env:GITHUB_WORKSPACE\Cargo.toml" `
+            --release `
+            --locked `
+            --verbose
+
+      - name: Verify release binary
+        shell: pwsh
+        run: |
+          $bin = Join-Path $env:GITHUB_WORKSPACE "target\release\cip.exe"
+
+          Write-Host "Expected binary:"
+          Write-Host $bin
+
+          if (-not (Test-Path $bin)) {
+            Write-Error "cip.exe was not generated."
+            exit 1
+          }
+
+          Get-Item $bin | Format-List FullName,Length,LastWriteTime
 
       - name: Smoke test the binary
         shell: pwsh
         run: |
-          $bin = "target\release\cip.exe"
-          if (-not (Test-Path $bin)) { throw "cip.exe not found at $bin" }
+          $root = $env:GITHUB_WORKSPACE
+          $bin = Join-Path $root "target\release\cip.exe"
+          $project = Join-Path $root "smoke_test_project"
+
+          if (Test-Path $project) {
+            Remove-Item $project -Recurse -Force
+          }
+
+          Write-Host "=== cip version ==="
           & $bin version
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "cip version failed with exit code $LASTEXITCODE"
+          }
+
+          Write-Host ""
+          Write-Host "=== cip help ==="
           & $bin help
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "cip help failed with exit code $LASTEXITCODE"
+          }
+
+          Write-Host ""
+          Write-Host "=== cip init ==="
           & $bin init smoke_test_project
-          Push-Location smoke_test_project
-          & "..\$bin" check
-          Pop-Location
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "cip init failed with exit code $LASTEXITCODE"
+          }
+
+          if (-not (Test-Path $project)) {
+            throw "smoke_test_project was not created."
+          }
+
+          Write-Host ""
+          Write-Host "=== Generated project ==="
+          Get-ChildItem $project -Force
+
+          Push-Location $project
+
+          try {
+            Write-Host ""
+            Write-Host "=== cip check ==="
+            & $bin check
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "cip check failed with exit code $LASTEXITCODE"
+            }
+          }
+          finally {
+            Pop-Location
+          }
 
       - name: Upload cip.exe artifact
         uses: actions/upload-artifact@v4
