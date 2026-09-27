@@ -1,0 +1,80 @@
+name: Build (Windows)
+
+# Compiles the CIP CLI (cip.exe) on Windows. Runs on every push/PR that
+# touches the Rust source, and can also be triggered manually.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "templates/**"
+      - "cip-python/**"
+      - "tests/**"
+      - ".github/workflows/build.yml"
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        run: |
+          rustup default stable
+          rustup update stable
+          rustc -Vv
+          cargo --version
+
+      - name: Cache cargo registry & build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            target
+          key: windows-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            windows-cargo-
+
+      - name: Run tests
+        run: cargo test --locked --verbose
+
+      - name: Build release binary
+        run: cargo build --release --locked --verbose
+
+      - name: Smoke test the binary
+        shell: pwsh
+        run: |
+          $bin = "target\release\cip.exe"
+          if (-not (Test-Path $bin)) { throw "cip.exe not found at $bin" }
+          & $bin version
+          & $bin help
+          & $bin init smoke_test_project
+          Push-Location smoke_test_project
+          & "..\$bin" check
+          Pop-Location
+
+      - name: Upload cip.exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cip-windows-x86_64
+          path: target/release/cip.exe
+          if-no-files-found: error
+
+      - name: Attach binary to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/cip.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
