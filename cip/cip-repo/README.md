@@ -40,14 +40,6 @@ cd hello
 ../target/release/cip fetch-runtime  # Pyodide 코어 런타임 최초 1회
 ../target/release/cip build
 ```
-
-## CI
-
-`.github/workflows/build.yml`이 push/PR마다 **windows-latest**에서
-`cargo test` + `cargo build --release`를 돌리고, `cip.exe`가 실제로
-`version` / `help` / `init` / `check`를 수행하는지 smoke test까지 한 뒤
-아티팩트로 업로드한다. 태그 푸시 시에는 릴리즈에 `cip.exe`를 첨부한다.
-
 ## 알려진 제한
 
 - numpy 같은 C-extension 패키지는 PyPI에 wasm wheel이 있는 경우만
